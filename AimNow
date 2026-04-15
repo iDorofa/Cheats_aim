@@ -1,0 +1,82 @@
+import cv2
+import torch
+import mss
+import numpy as np
+from ultralytics import YOLO
+import win32api, win32con
+
+# Настройки
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+model = YOLO('yolov8n.pt').to(device)
+sct = mss.mss()
+
+fov_size = 640 
+monitor = {
+    "top": (sct.monitors[1]['height'] - fov_size) // 2,
+    "left": (sct.monitors[1]['width'] - fov_size) // 2,
+    "width": fov_size,
+    "height": fov_size,
+}
+center_fov = fov_size // 2
+
+def move_mouse(dx, dy):
+    win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, int(dx), int(dy), 0, 0)
+
+def click():
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+print("Визуализация запущена. Нажми 'q' в окне трансляции, чтобы выйти.")
+
+with torch.no_grad():
+    while True:
+        img = np.array(sct.grab(monitor))
+        frame = img[:, :, :3].copy() # Делаем копию для рисования
+
+        results = model.predict(frame, verbose=False, conf=0.5)
+
+        best_target = None
+        closest_distance = float('inf')
+
+        for r in results:
+            for box in r.boxes:
+                if int(box.cls) == 0:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    
+                    # Рисуем рамку вокруг каждого найденного человека
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    
+                    # Точка прицеливания (голова)
+                    t_x = x1 + (x2 - x1) // 2
+                    t_y = y1 + int((y2 - y1) * 0.25)
+                    
+                    dist = ((t_x - center_fov)**2 + (t_y - center_fov)**2)**0.5
+                    if dist < closest_distance:
+                        closest_distance = dist
+                        best_target = (t_x, t_y)
+
+        # Отрисовка центра экрана (прицела)
+        cv2.circle(frame, (center_fov, center_fov), 5, (255, 0, 255), -1)
+
+        if best_target:
+            tx, ty = best_target
+            # Рисуем линию от прицела до цели
+            cv2.line(frame, (center_fov, center_fov), (tx, ty), (0, 255, 255), 2)
+            
+            dx = tx - center_fov
+            dy = ty - center_fov
+            
+            if abs(dx) < 20 and abs(dy) < 20:
+                click()
+                cv2.putText(frame, "FIRE!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            else:
+                move_mouse(dx / 2, dy / 2)
+
+        # Показываем окно
+        cv2.imshow('AI Vision', frame)
+
+        # Выход на клавишу 'q'
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+cv2.destroyAllWindows()
