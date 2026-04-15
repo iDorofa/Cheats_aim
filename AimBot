@@ -1,0 +1,75 @@
+import cv2
+import torch
+import pyautogui
+import mss
+import numpy as np
+from ultralytics import YOLO
+import time
+
+pyautogui.FAILSAFE = False
+pyautogui.MINIMUM_DURATION = 0
+pyautogui.PAUSE = 0
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+model = YOLO('yolov8n.pt').to(device)
+
+sct = mss.mss()
+monitor = sct.monitors[1]
+
+screen_width = monitor['width']
+screen_height = monitor['height']
+center_x = screen_width // 2
+center_y = screen_height // 2
+
+target_class = 0
+
+smooth_factor = 5
+click_delay = 0.01
+
+print(f"Running on: {device.upper()}")
+print(f"Resolution: {screen_width}x{screen_height}")
+
+with torch.no_grad():
+    while True:
+        img = sct.grab(monitor)
+        frame = np.array(img)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        results = model(frame, verbose=False)
+
+        closest_distance = float('inf')
+        target_x, target_y = None, None
+
+        for r in results:
+            boxes = r.boxes
+            if boxes is not None:
+                for box in boxes:
+                    cls = int(box.cls[0])
+                    if cls == target_class:
+                        conf = float(box.conf[0])
+                        if conf > 0.5:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            obj_center_x = (x1 + x2) // 2
+                            obj_center_y = (y1 + y2) // 2
+                            
+                            distance = ((obj_center_x - center_x) ** 2 + (obj_center_y - center_y) ** 2) ** 0.5
+                            
+                            if distance < closest_distance:
+                                closest_distance = distance
+                                target_x, target_y = obj_center_x, obj_center_y
+
+        if target_x is not None and target_y is not None:
+            dx = target_x - center_x
+            dy = target_y - center_y
+            
+            if abs(dx) > 5 or abs(dy) > 5:
+                if smooth_factor > 1:
+                    dx = dx // smooth_factor
+                    dy = dy // smooth_factor
+                
+                pyautogui.moveRel(dx, dy)
+            else:
+                pyautogui.click()
+                time.sleep(click_delay)
+        
+        time.sleep(0.001)
